@@ -64,6 +64,20 @@
             letter-spacing: 0.5px;
         }
 
+        .config-area {
+            background: #fff3cd;
+            border: 1px solid #ffeeba;
+            color: #856404;
+            padding: 10px;
+            margin-bottom: 20px;
+            border-radius: 8px;
+            font-size: 0.85rem;
+        }
+
+        .hidden {
+            display: none;
+        }
+
         .form-group {
             margin-bottom: 20px;
         }
@@ -112,8 +126,10 @@
             transform: translateY(-2px);
         }
 
-        button.btn-save:active {
-            transform: translateY(0);
+        button.btn-save:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+            transform: none;
         }
 
         .records-section {
@@ -249,40 +265,86 @@
             <h1>Registro de Firmware</h1>
         </header>
 
+        <!-- Config Alert -->
+        <div id="configAlert" class="config-area">
+            <strong>⚠️ Configuração Necessária:</strong><br>
+            Edite o arquivo <code>index.html</code> e adicione suas chaves do Firebase na área marcada com "COLE SUAS
+            CHAVES AQUI". Veja o arquivo <code>walkthrough.md</code> para instruções.
+        </div>
+
         <main>
             <div class="form-group">
                 <label for="serialNumber">Número de Série</label>
-                <input type="text" id="serialNumber" placeholder="Ex: KR12345678" autocomplete="off">
+                <input type="text" id="serialNumber" placeholder="Ex: RRQ071234" autocomplete="off">
             </div>
 
             <div class="form-group">
                 <label for="firmwareVersion">Versão de Firmware</label>
-                <input type="text" id="firmwareVersion" placeholder="Ex: v1.0.5" autocomplete="off">
+                <input type="text" id="firmwareVersion" placeholder="Ex: 1.0.5" autocomplete="off">
             </div>
 
-            <button class="btn-save" id="btnSave">Salvar Registro</button>
+            <button class="btn-save" id="btnSave">Salvar na Nuvem</button>
         </main>
 
         <section class="records-section">
-            <h2>Registros Recentes</h2>
+            <h2>Registros na Nuvem</h2>
             <ul class="record-list" id="recordList">
-                <!-- Items will be injected here -->
+                <li class="empty-state">Carregando registros...</li>
             </ul>
         </section>
     </div>
 
     <div id="toast" class="toast">Registro salvo com sucesso!</div>
 
-    <script>
-        const serialInput = document.getElementById('serialNumber');
-        const firmwareInput = document.getElementById('firmwareVersion');
+    <script type="module">
+        // Import the functions you need from the SDKs you need
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+        import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, query, orderBy } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+
+        // ==========================================
+        //  COLE SUAS CHAVES DO FIREBASE AQUI ABAIXO
+        // ==========================================
+        const firebaseConfig = {
+            apiKey: "AIzaSyBwWZoZoZoZoZoZoZoZoZoZoZoZoZoZoZo",
+            authDomain: "firmwares-canon.firebaseapp.com",
+            projectId: "firmwares-canon",
+            storageBucket: "firmwares-canon.firebasestorage.app",
+            messagingSenderId: "635926490070",
+            appId: "1:635926490070:web:e3992abbbdbd2892cc9277",
+            measurementId: "G-02W1FT8QWW"
+        };
+        // ==========================================
+
+        let db;
+        const configAlert = document.getElementById('configAlert');
         const btnSave = document.getElementById('btnSave');
         const recordList = document.getElementById('recordList');
+        const serialInput = document.getElementById('serialNumber');
+        const firmwareInput = document.getElementById('firmwareVersion');
         const toast = document.getElementById('toast');
 
-        // Load records on startup
-        document.addEventListener('DOMContentLoaded', loadRecords);
+        // Initialize Firebase
 
+        // Toggle config alert
+        if (firebaseConfig.apiKey === "SUA_API_KEY_AQUI") {
+            btnSave.disabled = true;
+            btnSave.textContent = "Configure o Firebase primeiro";
+        } else {
+            try {
+                const app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                configAlert.style.display = 'none';
+            } catch (e) {
+                console.error("Erro ao iniciar Firebase:", e);
+            }
+        }
+
+        // ==========================================
+        //  UI Logic (LocalStorage)
+        // ==========================================
+
+        // Load records from LocalStorage on startup
+        document.addEventListener('DOMContentLoaded', loadRecords);
         btnSave.addEventListener('click', saveRecord);
 
         async function saveRecord() {
@@ -295,49 +357,59 @@
             }
 
             const timestamp = new Date().toLocaleString('pt-BR');
+            btnSave.disabled = true;
+            btnSave.textContent = "Salvando...";
 
-            // 1. Save to LocalStorage (UI purpose)
+            // 1. Update LocalStorage (UI View)
             const record = {
-                id: Date.now(),
+                id: Date.now(), // unique ID for UI tracking
                 serial: serial,
                 firmware: firmware,
                 date: timestamp
             };
 
-            const records = getRecords();
-            records.unshift(record); // Add to top
+            let records = getRecords();
+            // Check if serial exists to update or add new
+            const existingIndex = records.findIndex(r => r.serial === serial);
+
+            if (existingIndex >= 0) {
+                // Update existing
+                records[existingIndex].firmware = firmware;
+                records[existingIndex].date = timestamp;
+                // Optional: Move to top to show it's recent
+                const updatedRecord = records.splice(existingIndex, 1)[0];
+                records.unshift(updatedRecord);
+            } else {
+                // Add new
+                records.unshift(record);
+            }
+
             saveRecordsToStorage(records);
-
             renderRecords();
-            clearInputs();
 
-            // 2. Save to CSV (Backend)
-            try {
-                const response = await fetch('http://localhost:3000/save', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
+            // 2. Save to Firebase (Backend Archive)
+            // This is "Fire and Forget" or "Wait and Notify"
+            // The user wants the backend to be updated (Upsert)
+            if (db) {
+                try {
+                    await setDoc(doc(db, "firmwares", serial), {
                         serial: serial,
                         firmware: firmware,
-                        date: timestamp
-                    })
-                });
-
-                if (response.ok) {
-                    showToast('Registro salvo no Navegador e CSV!');
-                } else {
-                    showToast('Salvo no Navegador, mas erro no CSV.');
+                        date: timestamp,
+                        lastUpdated: Date.now()
+                    }, { merge: true });
+                    showToast('Salvo Localmente e na Nuvem!');
+                } catch (error) {
+                    console.error("Erro ao salvar na nuvem: ", error);
+                    showToast('Salvo Apenas Localmente (Erro na Nuvem)');
                 }
-            } catch (error) {
-                console.error('Erro ao conectar com servidor:', error);
-                showToast('Salvo offline. Servidor não detectado.');
+            } else {
+                showToast('Salvo Localmente (Nuvem não configurada)');
             }
-        }
 
-        function loadRecords() {
-            renderRecords();
+            clearInputs();
+            btnSave.disabled = false;
+            btnSave.textContent = "Salvar na Nuvem";
         }
 
         function getRecords() {
@@ -354,7 +426,7 @@
             recordList.innerHTML = '';
 
             if (records.length === 0) {
-                recordList.innerHTML = '<li class="empty-state">Nenhum registro encontrado.</li>';
+                recordList.innerHTML = '<li class="empty-state">Nenhum registro recente no navegador.</li>';
                 return;
             }
 
@@ -367,14 +439,24 @@
                         <span class="record-firmware">Firmware: ${escapeHtml(record.firmware)}</span>
                         <span class="record-date">${record.date}</span>
                     </div>
-                    <button class="btn-delete" onclick="deleteRecord(${record.id})" title="Excluir">&times;</button>
+                    <button class="btn-delete" title="Remover da lista">&times;</button>
                 `;
+
+                // Click listener for delete
+                // Uses closure to capture the specific record ID from this render cycle
+                li.querySelector('.btn-delete').addEventListener('click', () => deleteRecord(record.id));
+
                 recordList.appendChild(li);
             });
         }
 
+        function loadRecords() {
+            renderRecords();
+        }
+
         function deleteRecord(id) {
-            if (confirm('Tem certeza que deseja excluir este registro?')) {
+            // Visual Delete Only (Removes from LocalStorage, keeps in Firebase)
+            if (confirm('Remover este item da lista? (O registro permanecerá salvo na nuvem)')) {
                 let records = getRecords();
                 records = records.filter(r => r.id !== id);
                 saveRecordsToStorage(records);
@@ -388,7 +470,7 @@
             serialInput.focus();
         }
 
-        function showToast(message = 'Registro salvo com sucesso!') {
+        function showToast(message) {
             toast.textContent = message;
             toast.classList.add('show');
             setTimeout(() => {
@@ -397,6 +479,7 @@
         }
 
         function escapeHtml(text) {
+            if (!text) return '';
             const map = {
                 '&': '&amp;',
                 '<': '&lt;',
@@ -404,7 +487,7 @@
                 '"': '&quot;',
                 "'": '&#039;'
             };
-            return text.replace(/[&<>"']/g, function (m) { return map[m]; });
+            return text.toString().replace(/[&<>"']/g, function (m) { return map[m]; });
         }
     </script>
 </body>
