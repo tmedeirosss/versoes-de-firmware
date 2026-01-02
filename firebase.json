@@ -1,4 +1,7 @@
 {
+  "functions": {
+    "source": "functions"
+  },
   "hosting": {
     "public": ".",
     "ignore": [
@@ -8,6 +11,7 @@
       "package.json",
       "package-lock.json",
       "server.js",
+      "functions/**",
       "*.md",
       "task.md"
     ]

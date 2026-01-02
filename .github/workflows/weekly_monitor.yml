@@ -1,0 +1,41 @@
+name: Verificacao Semanal Firmware
+
+on:
+  schedule:
+    # Executa toda sexta-feira às 12:00 UTC (09:00 BRT)
+    - cron: '0 12 * * 5'
+  # Permite executar manualmente na aba "Actions" (botão Run Workflow)
+  workflow_dispatch:
+
+jobs:
+  check-firmware:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout do código
+      uses: actions/checkout@v3
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '18'
+
+    - name: Instalar Dependências
+      run: npm install
+
+    - name: Criar Arquivo de Credenciais Firebase
+      run: |
+        echo "${{ secrets.FIREBASE_SERVICE_ACCOUNT_BASE64 }}" | base64 -d > serviceAccountKey.json
+
+    - name: Criar Arquivo .env
+      run: |
+        echo "EMAIL_USER=${{ secrets.EMAIL_USER }}" > .env
+        echo "EMAIL_PASS=${{ secrets.EMAIL_PASS }}" >> .env
+        echo "EMAIL_DEST=${{ secrets.EMAIL_DEST }}" >> .env
+
+    - name: Executar Auditoria
+      run: node firmware_monitor.js --now
+      env:
+        # Garante que o script pegue as vars se estiverem no process.env explicitamente (redundância)
+        EMAIL_USER: ${{ secrets.EMAIL_USER }}
+        EMAIL_PASS: ${{ secrets.EMAIL_PASS }}

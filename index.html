@@ -347,6 +347,27 @@
         document.addEventListener('DOMContentLoaded', loadRecords);
         btnSave.addEventListener('click', saveRecord);
 
+        // ==========================================
+        //  Input Validation
+        // ==========================================
+
+        // Serial Number: Alphanumeric only + Uppercase
+        serialInput.addEventListener('input', (e) => {
+            let value = e.target.value;
+            // Remove non-alphanumeric chars
+            value = value.replace(/[^a-zA-Z0-9]/g, '');
+            // Force uppercase
+            e.target.value = value.toUpperCase();
+        });
+
+        // Firmware Version: Numbers + Dots only
+        firmwareInput.addEventListener('input', (e) => {
+            let value = e.target.value;
+            // Remove anything not a number or dot
+            value = value.replace(/[^0-9.]/g, '');
+            e.target.value = value;
+        });
+
         async function saveRecord() {
             const serial = serialInput.value.trim();
             const firmware = firmwareInput.value.trim();
