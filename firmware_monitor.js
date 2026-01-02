@@ -34,8 +34,18 @@ async function main() {
     console.log('=== Iniciando Verificação de Firmware (Modo Nuvem) ===');
     console.log(`Data/Hora: ${new Date().toLocaleString('pt-BR')}`);
 
+    // Debugar Variáveis de Ambiente (Segurança: Mostrar apenas parcialmente)
+    if (process.env.EMAIL_USER) console.log(`Configurado Email User: ${process.env.EMAIL_USER}`);
+    else console.warn('AVISO: EMAIL_USER não está definido no ambiente!');
+
+    if (process.env.EMAIL_PASS) console.log('Configurado Email Pass: OK (Oculto)');
+    else console.warn('AVISO: EMAIL_PASS não está definido no ambiente!');
+
     // 1. Inicializar Firebase
-    if (!initializeFirebase()) return;
+    if (!initializeFirebase()) {
+        console.error('Falha crítica na inicialização do Firebase.');
+        process.exit(1);
+    }
 
     // 2. Carregar Referência (Storage do Firebase)
     console.log(`Baixando '${CSV_FILENAME}' do Firebase Storage...`);
@@ -45,14 +55,15 @@ async function main() {
         console.log(`Carregados ${Object.keys(referenceMap).length} equipamentos do CSV de referência.`);
 
         if (Object.keys(referenceMap).length === 0) {
-            console.warn('AVISO: O CSV parece estar vazio ou com problemas na leitura (zero registros encontrados).');
+            console.error('ERRO CRÍTICO: O CSV parece estar vazio ou com problemas na leitura (zero registros encontrados).');
+            process.exit(1);
         }
 
     } catch (error) {
         console.error('ERRO CRÍTICO: Não foi possível ler o CSV do Storage.');
         console.error('Verifique se você fez upload do arquivo para o Firebase Storage.');
         console.error('Erro detalhado:', error.message);
-        return;
+        process.exit(1);
     }
 
     // 3. Buscar Dados do Firebase
@@ -68,6 +79,22 @@ async function main() {
         await sendEmailReport(updatesNeeded);
     } else {
         console.log('Nenhum equipamento precisa de atualização no momento.');
+
+        // DEBUG AMPLIADO
+        if (firebaseRecords.length > 0) {
+            console.log('--- DIAGNÓSTICO DO PRIMEIRO REGISTRO ---');
+            const sample = firebaseRecords[0];
+            const refVersion = referenceMap[sample.serial];
+            console.log(`Serial: ${sample.serial}`);
+            console.log(`Versão Banco: ${sample.firmware}`);
+            console.log(`Versão CSV:   ${refVersion || 'NÃO ENCONTRADA (Serial não bate com CSV)'}`);
+            if (refVersion) {
+                console.log(`Resultado Comparação: ${isVersionLower(sample.firmware, refVersion) ? 'DESATUALIZADO' : 'ATUALIZADO'}`);
+            }
+            console.log('----------------------------------------');
+        } else {
+            console.log('O banco de dados do Firebase está vazio.');
+        }
     }
 
     console.log('=== Fim da Verificação ===');
@@ -76,7 +103,7 @@ async function main() {
 function initializeFirebase() {
     if (!fs.existsSync(SERVICE_ACCOUNT_KEY)) {
         console.error(`ERRO: Arquivo '${SERVICE_ACCOUNT_KEY}' não encontrado.`);
-        console.error('Por favor, baixe a chave privada em: Configurações do Projeto > Contas de serviço > Gerar nova chave privada');
+        console.error('Por favor, certifique-se que o Secret FIREBASE_SERVICE_ACCOUNT_BASE64 foi configurado corretamente no GitHub.');
         return false;
     }
 
@@ -103,17 +130,13 @@ function loadReferenceFromStorage() {
         try {
             const [exists] = await file.exists();
             if (!exists) {
-                // Tenta verificar se o erro é permissão ou arquivo inexistente
                 console.error(`O arquivo ${CSV_FILENAME} não existe no bucket ${BUCKET_NAME}`);
                 reject(new Error("Arquivo não encontrado no Storage"));
                 return;
             }
 
-            // Baixa o arquivo para a memória
             const [buffer] = await file.download();
             const referenceMap = {};
-
-            // Converte buffer para stream legível para o csv-parser
             const stream = Readable.from(buffer.toString());
 
             stream
@@ -121,7 +144,6 @@ function loadReferenceFromStorage() {
                 .on('data', (row) => {
                     const serial = row['Serial']?.trim();
                     const lfv = row['LFV']?.trim();
-
                     if (serial && lfv) {
                         referenceMap[serial] = lfv;
                     }
@@ -170,12 +192,10 @@ function checkFirmwareStatus(records, referenceMap) {
     return updatesNeeded;
 }
 
-// Comparador simples de versões (ex: 1.0.1 vs 1.0.2)
 function isVersionLower(v1, v2) {
     if (!v1 || !v2) return false;
 
-    // Remove caracteres não numéricos exceto ponto e traço
-    // Divide por pontos
+    // Remove caracteres não numéricos exceto ponto
     const cleanV1 = v1.replace(/[^0-9.]/g, '').split('.');
     const cleanV2 = v2.replace(/[^0-9.]/g, '').split('.');
 
@@ -194,13 +214,13 @@ function isVersionLower(v1, v2) {
 
 async function sendEmailReport(list) {
     if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
-        console.log('Credenciais de e-mail não configuradas no arquivo .env. Pulando envio.');
+        console.error('ERRO: Credenciais de e-mail não configuradas no ambiente.');
+        process.exit(1);
         return;
     }
 
     const transporter = nodemailer.createTransport(EMAIL_CONFIG);
 
-    // Montar HTML do e-mail
     const rows = list.map(item => `
         <tr>
             <td style="padding: 8px; border: 1px solid #ddd;">${item.serial}</td>
@@ -238,9 +258,10 @@ async function sendEmailReport(list) {
 
     try {
         const info = await transporter.sendMail(mailOptions);
-        console.log('E-mail enviado: %s', info.messageId);
+        console.log('SUCESSO: E-mail enviado. ID:', info.messageId);
     } catch (error) {
-        console.error('Erro ao enviar e-mail:', error);
+        console.error('ERRO CRÍTICO AO ENVIAR EMAIL:', error);
+        process.exit(1);
     }
 }
 
@@ -248,12 +269,10 @@ async function sendEmailReport(list) {
 // SCHEDULING (Agendamento)
 // ==========================================
 
-// Se passar argumento --now, roda imediatamente
 if (process.argv.includes('--now')) {
     main();
 } else {
     // Cron syntax: Minute Hour DayOfMonth Month DayOfWeek
-    // 0 9 * * 5 = Sextas às 09:00
     console.log('Verificação programada para Sextas às 09:00.');
     cron.schedule('0 9 * * 5', () => {
         main();
