@@ -10,12 +10,12 @@ require('dotenv').config();
 // ==========================================
 // CONFIGURAÇÃO
 // ==========================================
-const CSV_FILENAME = 'equipamentos_uniFLOW_online.csv';
-const BUCKET_NAME = 'firmwares-canon.firebasestorage.app'; // Bucket padrão
+// Como estamos rodando no GitHub Actions com 'actions/checkout',
+// o arquivo estará na mesma pasta raiz do projeto.
+const CSV_FILE = 'equipamentos_uniFLOW_online.csv';
 const SERVICE_ACCOUNT_KEY = 'serviceAccountKey.json';
 
 // Configuração de E-mail (Gmail)
-// Crie uma 'Senha de App' em: https://myaccount.google.com/apppasswords
 const EMAIL_CONFIG = {
     service: 'gmail',
     auth: {
@@ -31,15 +31,12 @@ const EMAIL_DEST = process.env.EMAIL_DEST || process.env.EMAIL_USER;
 // ==========================================
 
 async function main() {
-    console.log('=== Iniciando Verificação de Firmware (Modo Nuvem) ===');
+    console.log('=== Iniciando Verificação de Firmware (Modo GitHub Actions / Local) ===');
     console.log(`Data/Hora: ${new Date().toLocaleString('pt-BR')}`);
 
-    // Debugar Variáveis de Ambiente (Segurança: Mostrar apenas parcialmente)
+    // Debugar Variáveis de Ambiente
     if (process.env.EMAIL_USER) console.log(`Configurado Email User: ${process.env.EMAIL_USER}`);
     else console.warn('AVISO: EMAIL_USER não está definido no ambiente!');
-
-    if (process.env.EMAIL_PASS) console.log('Configurado Email Pass: OK (Oculto)');
-    else console.warn('AVISO: EMAIL_PASS não está definido no ambiente!');
 
     // 1. Inicializar Firebase
     if (!initializeFirebase()) {
@@ -47,21 +44,21 @@ async function main() {
         process.exit(1);
     }
 
-    // 2. Carregar Referência (Storage do Firebase)
-    console.log(`Baixando '${CSV_FILENAME}' do Firebase Storage...`);
+    // 2. Carregar Referência (Arquivo Local do Repositório)
+    console.log(`Lendo arquivo local: '${CSV_FILE}'...`);
     let referenceMap;
     try {
-        referenceMap = await loadReferenceFromStorage();
+        referenceMap = await loadReferenceCSV();
         console.log(`Carregados ${Object.keys(referenceMap).length} equipamentos do CSV de referência.`);
 
         if (Object.keys(referenceMap).length === 0) {
-            console.error('ERRO CRÍTICO: O CSV parece estar vazio ou com problemas na leitura (zero registros encontrados).');
+            console.error('ERRO CRÍTICO: O CSV parece estar vazio (zero registros).');
             process.exit(1);
         }
 
     } catch (error) {
-        console.error('ERRO CRÍTICO: Não foi possível ler o CSV do Storage.');
-        console.error('Verifique se você fez upload do arquivo para o Firebase Storage.');
+        console.error(`ERRO CRÍTICO: Não foi possível ler o arquivo local '${CSV_FILE}'.`);
+        console.error('Certifique-se que este arquivo está na raiz do seu repositório GitHub e foi enviado (git push).');
         console.error('Erro detalhado:', error.message);
         process.exit(1);
     }
@@ -80,7 +77,6 @@ async function main() {
     } else {
         console.log('Nenhum equipamento precisa de atualização no momento.');
 
-        // DEBUG AMPLIADO
         if (firebaseRecords.length > 0) {
             console.log('--- DIAGNÓSTICO DO PRIMEIRO REGISTRO ---');
             const sample = firebaseRecords[0];
@@ -103,7 +99,7 @@ async function main() {
 function initializeFirebase() {
     if (!fs.existsSync(SERVICE_ACCOUNT_KEY)) {
         console.error(`ERRO: Arquivo '${SERVICE_ACCOUNT_KEY}' não encontrado.`);
-        console.error('Por favor, certifique-se que o Secret FIREBASE_SERVICE_ACCOUNT_BASE64 foi configurado corretamente no GitHub.');
+        console.error('Nota: No GitHub Actions, ele é criado a partir do Secret FIREBASE_SERVICE_ACCOUNT_BASE64.');
         return false;
     }
 
@@ -111,8 +107,8 @@ function initializeFirebase() {
         if (!admin.apps.length) {
             const serviceAccount = require(path.join(__dirname, SERVICE_ACCOUNT_KEY));
             admin.initializeApp({
-                credential: admin.credential.cert(serviceAccount),
-                storageBucket: BUCKET_NAME
+                credential: admin.credential.cert(serviceAccount)
+                // Nota: storageBucket removido pois não vamos usar mais
             });
         }
         return true;
@@ -122,38 +118,26 @@ function initializeFirebase() {
     }
 }
 
-function loadReferenceFromStorage() {
-    return new Promise(async (resolve, reject) => {
-        const bucket = admin.storage().bucket();
-        const file = bucket.file(CSV_FILENAME);
+function loadReferenceCSV() {
+    return new Promise((resolve, reject) => {
+        const referenceMap = {};
 
-        try {
-            const [exists] = await file.exists();
-            if (!exists) {
-                console.error(`O arquivo ${CSV_FILENAME} não existe no bucket ${BUCKET_NAME}`);
-                reject(new Error("Arquivo não encontrado no Storage"));
-                return;
-            }
-
-            const [buffer] = await file.download();
-            const referenceMap = {};
-            const stream = Readable.from(buffer.toString());
-
-            stream
-                .pipe(csv({ separator: ';' }))
-                .on('data', (row) => {
-                    const serial = row['Serial']?.trim();
-                    const lfv = row['LFV']?.trim();
-                    if (serial && lfv) {
-                        referenceMap[serial] = lfv;
-                    }
-                })
-                .on('end', () => resolve(referenceMap))
-                .on('error', reject);
-
-        } catch (error) {
-            reject(error);
+        if (!fs.existsSync(CSV_FILE)) {
+            reject(new Error("Arquivo não encontrado no sistema de arquivos local."));
+            return;
         }
+
+        fs.createReadStream(CSV_FILE)
+            .pipe(csv({ separator: ';' }))
+            .on('data', (row) => {
+                const serial = row['Serial']?.trim();
+                const lfv = row['LFV']?.trim();
+                if (serial && lfv) {
+                    referenceMap[serial] = lfv;
+                }
+            })
+            .on('end', () => resolve(referenceMap))
+            .on('error', reject);
     });
 }
 
@@ -194,22 +178,16 @@ function checkFirmwareStatus(records, referenceMap) {
 
 function isVersionLower(v1, v2) {
     if (!v1 || !v2) return false;
-
-    // Remove caracteres não numéricos exceto ponto
     const cleanV1 = v1.replace(/[^0-9.]/g, '').split('.');
     const cleanV2 = v2.replace(/[^0-9.]/g, '').split('.');
-
     const len = Math.max(cleanV1.length, cleanV2.length);
-
     for (let i = 0; i < len; i++) {
         const num1 = parseInt(cleanV1[i] || 0);
         const num2 = parseInt(cleanV2[i] || 0);
-
         if (num1 < num2) return true;
         if (num1 > num2) return false;
     }
-
-    return false; // São iguais
+    return false;
 }
 
 async function sendEmailReport(list) {
@@ -232,7 +210,7 @@ async function sendEmailReport(list) {
 
     const html = `
         <h2>Relatório de Atualização de Firmware</h2>
-        <p>Os seguintes equipamentos estão com firmware desatualizado em relação à base de referência (CSV na Nuvem):</p>
+        <p>Os seguintes equipamentos estão com firmware desatualizado em relação à base de referência (CSV):</p>
         <table style="border-collapse: collapse; width: 100%; max-width: 600px;">
             <thead>
                 <tr style="background-color: #f2f2f2;">
@@ -272,7 +250,6 @@ async function sendEmailReport(list) {
 if (process.argv.includes('--now')) {
     main();
 } else {
-    // Cron syntax: Minute Hour DayOfMonth Month DayOfWeek
     console.log('Verificação programada para Sextas às 09:00.');
     cron.schedule('0 9 * * 5', () => {
         main();
